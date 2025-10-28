@@ -1,23 +1,18 @@
 
-# US Pattern Radar — 15/30/60/240m
-# ---------------------------------
-# How to run:
-#   1) pip install -r requirements.txt
-#   2) streamlit run app_streamlit.py
-#
-# This app uses free yfinance data (5m interval) for a quick demo.
-# For production, swap the data loader with Polygon/Alpaca.
+# US Pattern Radar — 15/30/60/240m (Patched)
+# How to run locally:
+#   pip install -r requirements.txt
+#   streamlit run app_streamlit.py
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime as dt
-
 import pytz
 import yfinance as yf
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="US Pattern Radar (15/30/60/240m)", layout="wide")
+st.set_page_config(page_title="🚀미장 진입 패턴 레이더 (15/30/60/240m)", layout="wide")
 
 # -------------------- Utilities
 ET = pytz.timezone("America/New_York")
@@ -58,12 +53,12 @@ TF_WEIGHTS = {15:0.20, 30:0.35, 60:0.35, 240:0.10}
 
 def resample_ohlcv(df_5m: pd.DataFrame, tf_min: int) -> pd.DataFrame:
     rule = f"{tf_min}T"
-    o = df_5m['Open'].resample(rule).first()
-    h = df_5m['High'].resample(rule).max()
-    l = df_5m['Low'].resample(rule).min()
-    c = df_5m['Close'].resample(rule).last()
-    v = df_5m['Volume'].resample(rule).sum()
-    out = pd.DataFrame({"Open":o,"High":h,"Low":l,"Close":c,"Volume":v}).dropna()
+    o = df_5m['Open'].resample(rule).first().rename('Open')
+    h = df_5m['High'].resample(rule).max().rename('High')
+    l = df_5m['Low'].resample(rule).min().rename('Low')
+    c = df_5m['Close'].resample(rule).last().rename('Close')
+    v = df_5m['Volume'].resample(rule).sum().rename('Volume')
+    out = pd.concat([o, h, l, c, v], axis=1).dropna()
     return out
 
 def score_pack(df: pd.DataFrame, tf: int):
@@ -125,7 +120,7 @@ def classify_multi_tf_from_5m(df_5m: pd.DataFrame):
 
     idx = pack[30]['scores'].index.intersection(pack[60]['scores'].index).intersection(pack[15]['scores'].index).intersection(pack[240]['scores'].index)
     if len(idx) == 0:
-        raise ValueError("Not enough overlapping data after resampling.")
+        raise ValueError("데이터가 부족하거나 기간이 짧습니다. 기간(days)을 늘리거나 다른 심볼로 시도하세요.")
     latest = idx[-1]
     label_space = pack[30]['scores'].columns
     agg = {lab:0.0 for lab in label_space}
@@ -146,7 +141,6 @@ def classify_multi_tf_from_5m(df_5m: pd.DataFrame):
     elif final_label=="⑥ LiquidityTest": action = "관망 — 상위 프레임 확정까지 대기"
     else: action = "조건 미충족 — 관망"
 
-    # Build a compact result
     result = {
         "timestamp": str(latest),
         "final_pattern": final_label,
@@ -159,51 +153,57 @@ def classify_multi_tf_from_5m(df_5m: pd.DataFrame):
     return result, pack
 
 def fetch_yf_5m(symbol: str, days: int = 30) -> pd.DataFrame:
-    # yfinance returns in UTC; we filter to regular session 09:30-16:00 ET
-    period = f"{days}d"
-    df = yf.download(symbol, period=period, interval="5m", auto_adjust=True, progress=False)
-    if df.empty:
-        return df
-    df.index = pd.to_datetime(df.index, utc=True)
-    df = df.rename(columns={"Open":"Open","High":"High","Low":"Low","Close":"Close","Volume":"Volume"})
-    # Filter regular trading hours
+    period = f\"{days}d\"
+    df = yf.download(symbol, period=period, interval=\"5m\", auto_adjust=True, progress=False)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    # Ensure timezone-aware index
+    idx = pd.to_datetime(df.index)
+    if getattr(idx, 'tz', None) is None:
+        idx = idx.tz_localize('UTC')
+    df.index = idx
+    df = df.rename(columns={\"Open\":\"Open\",\"High\":\"High\",\"Low\":\"Low\",\"Close\":\"Close\",\"Volume\":\"Volume\"})
+    # Regular session filter
     idx_et = df.index.tz_convert(ET)
     mask = (idx_et.time >= dt.time(9,30)) & (idx_et.time <= dt.time(16,0))
     df = df.loc[mask].copy()
-    # Convert to KST for display consistency
+    # Convert to KST for display
     df = df.tz_convert(KST)
-    return df[["Open","High","Low","Close","Volume"]].dropna()
+    df = df[[\"Open\",\"High\",\"Low\",\"Close\",\"Volume\"]].dropna()
+    if len(df) < 200:
+        return pd.DataFrame()
+    return df
 
 def plot_panel(ax_price, ax_vol, dft: pd.DataFrame, title: str):
-    ax_price.plot(dft.index, dft["Close"], label="Close")
-    ax_price.plot(dft.index, ema(dft["Close"],5), label="EMA5", linewidth=1)
-    ax_price.plot(dft.index, ema(dft["Close"],20), label="EMA20", linewidth=1)
+    ax_price.plot(dft.index, dft[\"Close\"], label=\"Close\")
+    ax_price.plot(dft.index, ema(dft[\"Close\"],5), label=\"EMA5\", linewidth=1)
+    ax_price.plot(dft.index, ema(dft[\"Close\"],20), label=\"EMA20\", linewidth=1)
     ax_price.set_title(title)
-    ax_price.legend(loc="upper left", fontsize=8)
+    ax_price.legend(loc=\"upper left\", fontsize=8)
     ax_price.grid(True, alpha=0.3)
 
-    ax_vol.bar(dft.index, dft["Volume"])
-    ax_vol.set_ylabel("Vol")
+    ax_vol.bar(dft.index, dft[\"Volume\"])
+    ax_vol.set_ylabel(\"Vol\")
     ax_vol.grid(True, alpha=0.2)
 
 # -------------------- UI
-st.title("📘 세력 행동 패턴 레이더 — US Market (15/30/60/240m)")
+st.title(\"📘 세력 행동 패턴 레이더 — US Market (15/30/60/240m)\")
 
 col1, col2, col3 = st.columns([1,1,1])
 with col1:
-    symbol = st.text_input("심볼(Symbol)", "TSLA").upper().strip()
+    symbol = st.text_input(\"심볼(Symbol)\", \"TSLA\").upper().strip()
 with col2:
-    days = st.slider("가져올 기간(일)", min_value=10, max_value=120, value=60, step=10)
+    days = st.slider(\"가져올 기간(일)\", min_value=10, max_value=120, value=60, step=10)
 with col3:
-    tail_n = st.slider("차트 표시 봉 수(프레임별)", min_value=100, max_value=400, value=200, step=50)
+    tail_n = st.slider(\"차트 표시 봉 수(프레임별)\", min_value=100, max_value=400, value=200, step=50)
 
-st.caption("※ 데이터는 yfinance(지연/제한) 기반 데모입니다. 실전은 Polygon/Alpaca로 교체 권장.")
+st.caption(\"※ 데이터는 yfinance(지연/제한) 기반 데모입니다. 실전은 Polygon/Alpaca로 교체 권장.\")
 
-if st.button("분석 실행"):
-    with st.spinner("데이터 수집 및 패턴 판독 중..."):
+if st.button(\"분석 실행\"):
+    with st.spinner(\"데이터 수집 및 패턴 판독 중...\"):
         df5 = fetch_yf_5m(symbol, days)
         if df5 is None or df5.empty:
-            st.error("데이터를 가져오지 못했습니다. 심볼을 확인하거나 기간을 늘려보세요.")
+            st.error(\"데이터가 부족합니다. 기간(days)을 늘리거나, TSLA/AAPL/NVDA 같은 티커로 다시 시도해 보세요.\")
         else:
             try:
                 result, pack = classify_multi_tf_from_5m(df5)
@@ -211,16 +211,15 @@ if st.button("분석 실행"):
                 st.exception(e)
                 st.stop()
 
-            st.success(f"[{symbol}] {result['final_pattern']} | 신뢰도 {result['final_confidence']:.1f} | 권장: {result['action']}")
+            st.success(f\"[{symbol}] {result['final_pattern']} | 신뢰도 {result['final_confidence']:.1f} | 권장: {result['action']}\")
             st.json(result)
 
-            # 4-frame charts
             for tf in [15,30,60,240]:
                 dft = pack[tf]['df'].tail(tail_n)
-                st.subheader(f"🕒 {tf}분 — {pack[tf]['winner'].iloc[-1]}  (conf {pack[tf]['conf'].iloc[-1]:.1f})")
+                st.subheader(f\"🕒 {tf}분 — {pack[tf]['winner'].iloc[-1]}  (conf {pack[tf]['conf'].iloc[-1]:.1f})\")
                 fig, (ax_price, ax_vol) = plt.subplots(2, 1, figsize=(10, 4), sharex=True, height_ratios=[3,1])
-                plot_panel(ax_price, ax_vol, dft, title=f"{symbol} — {tf}m")
+                plot_panel(ax_price, ax_vol, dft, title=f\"{symbol} — {tf}m\")
                 st.pyplot(fig)
                 plt.close(fig)
 
-            st.caption("Tip: 30m·60m가 같은 방향(①②③ 계열 or ⑤)일 때 신호를 더 강하게 보세요. ④ 단독 급등은 OBV 동반 여부 반드시 확인.")
+            st.caption(\"Tip: 30m·60m가 같은 방향(①②③ 계열 or ⑤)일 때 신호를 더 강하게 보세요. ④ 단독 급등은 OBV 동반 여부 반드시 확인.\")
